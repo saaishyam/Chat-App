@@ -2,100 +2,183 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/select.h>
 #include <netinet/in.h>
 #include <unistd.h>
 
-#define port 8080
+#define PORT 8080
+#define BUFFER_SIZE 1024
 
-int main(){
-
-    //Server Configurations
-
+int main()
+{
     int socketfd;
+    char Buffer[BUFFER_SIZE];
 
-    char Buffer[1024];
+    int client_socket1 = -1;
+    int client_socket2 = -1;
 
-    int client_socket1;
-    int client_socket2;
+    socketfd = socket(AF_INET, SOCK_STREAM, 0);
 
-    socketfd = socket(AF_INET,SOCK_STREAM,0);
-
-    if(socketfd <0){
+    if (socketfd < 0)
+    {
         perror("Socket");
         return 1;
     }
 
     struct sockaddr_in server;
 
-    memset(&server,0,sizeof(server));
+    memset(&server, 0, sizeof(server));
 
     server.sin_family = AF_INET;
-    server.sin_port =htons(port);
+    server.sin_port = htons(PORT);
     server.sin_addr.s_addr = INADDR_ANY;
 
     int opt = 1;
-    setsockopt(socketfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
- 
-    bind(socketfd,(struct sockaddr*) &server,sizeof(server));
 
-    listen(socketfd,5);
+    setsockopt(
+        socketfd,
+        SOL_SOCKET,
+        SO_REUSEADDR,
+        &opt,
+        sizeof(opt)
+    );
 
-
-    client_socket1 = accept(socketfd,NULL, NULL);
-    client_socket2 = accept(socketfd,NULL,NULL);
-
-    if(client_socket1 < 0){
-        printf("accept");
-    }
-    else{
-        printf("Client 1 Connected\n");
-    }
-
-    if(client_socket2 < 0){
-        printf("accept");
-    }
-    else{
-        printf("Client 2 connected\n");
+    if (bind(socketfd, (struct sockaddr *)&server, sizeof(server)) < 0)
+    {
+        perror("Bind");
+        close(socketfd);
+        return 1;
     }
 
-    pid_t p = fork();
+    if (listen(socketfd, 5) < 0)
+    {
+        perror("Listen");
+        close(socketfd);
+        return 1;
+    }
 
-    while (1){
+    printf("Server listening on port %d...\n", PORT);
 
-        if(p > 0){
-            int client1 = recv(client_socket1,Buffer,sizeof(Buffer),0);
-            
-            if (client1 > 0){
-                send(client_socket2,Buffer,client1,0);
+    fd_set readfds;
+
+    while (1)
+    {
+        FD_ZERO(&readfds);
+
+        FD_SET(socketfd, &readfds);
+
+        if (client_socket1 != -1)
+            FD_SET(client_socket1, &readfds);
+
+        if (client_socket2 != -1)
+            FD_SET(client_socket2, &readfds);
+
+        int max_fd = socketfd;
+
+        if (client_socket1 > max_fd)
+            max_fd = client_socket1;
+
+        if (client_socket2 > max_fd)
+            max_fd = client_socket2;
+
+        int activity = select(
+            max_fd + 1,
+            &readfds,
+            NULL,
+            NULL,
+            NULL
+        );
+
+        if (activity < 0)
+        {
+            perror("select");
+            break;
+        }
+
+        if (FD_ISSET(socketfd, &readfds))
+        {
+            int new_client = accept(socketfd, NULL, NULL);
+
+            if (new_client < 0)
+            {
+                perror("accept");
             }
-            else if(client1 == 0){
+            else if (client_socket1 == -1)
+            {
+                client_socket1 = new_client;
+                printf("Client 1 connected\n");
+            }
+            else if (client_socket2 == -1)
+            {
+                client_socket2 = new_client;
+                printf("Client 2 connected\n");
+            }
+            else
+            {
+                close(new_client);
+            }
+        }
+
+        if (client_socket1 != -1 &&
+            FD_ISSET(client_socket1, &readfds))
+        {
+            int bytes = recv(
+                client_socket1,
+                Buffer,
+                sizeof(Buffer),
+                0
+            );
+
+            if (bytes > 0)
+            {
+                if (client_socket2 != -1)
+                    send(client_socket2, Buffer, bytes, 0);
+            }
+            else if (bytes == 0)
+            {
                 printf("Client 1 disconnected\n");
                 close(client_socket1);
-                break;
+                client_socket1 = -1;
             }
-            else if(client1 < 0){
+            else
+            {
                 perror("recv");
                 close(client_socket1);
-                break;
+                client_socket1 = -1;
             }
         }
-        else if (p == 0){
-            int client2 = recv(client_socket2,Buffer,sizeof(Buffer),0);
 
-            if (client2 > 0){
-                send(client_socket1,Buffer,client2,0);
+        if (client_socket2 != -1 &&
+            FD_ISSET(client_socket2, &readfds))
+        {
+            int bytes = recv(
+                client_socket2,
+                Buffer,
+                sizeof(Buffer),
+                0
+            );
+
+            if (bytes > 0)
+            {
+                if (client_socket1 != -1)
+                    send(client_socket1, Buffer, bytes, 0);
             }
-            else if(client2 == 0){
-                printf("Client2 disconnected\n");
+            else if (bytes == 0)
+            {
+                printf("Client 2 disconnected\n");
                 close(client_socket2);
-                break;
+                client_socket2 = -1;
             }
-             else if(client2 < 0){
+            else
+            {
                 perror("recv");
                 close(client_socket2);
-                break;
+                client_socket2 = -1;
             }
         }
-  
     }
+
+    close(socketfd);
+
+    return 0;
 }
